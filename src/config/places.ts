@@ -1,8 +1,4 @@
-// Google Places API configuration
-// Replace with your actual Google Maps API key (enable Places API in Google Cloud Console)
-export const GOOGLE_PLACES_API_KEY = 'YOUR_GOOGLE_PLACES_API_KEY';
-
-export const IS_PLACES_DEMO = GOOGLE_PLACES_API_KEY === 'YOUR_GOOGLE_PLACES_API_KEY';
+// Nearby hospitals using OpenStreetMap Overpass API (free, no API key needed)
 
 export interface NearbyHospital {
   id: string;
@@ -10,7 +6,7 @@ export interface NearbyHospital {
   address: string;
   latitude: number;
   longitude: number;
-  distance: string; // e.g. "1.2 km"
+  distance: string;
   rating?: number;
   isOpen?: boolean;
 }
@@ -94,52 +90,90 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 }
 
 /**
- * Fetch nearby hospitals using Google Places Nearby Search API.
- * Falls back to demo data if API key is not configured.
+ * Fetch nearby hospitals using OpenStreetMap Overpass API.
+ * Free, no API key required. Falls back to demo data on error.
  */
 export async function fetchNearbyHospitals(
   latitude: number,
   longitude: number,
   radiusMeters: number = 5000
 ): Promise<NearbyHospital[]> {
-  if (IS_PLACES_DEMO) {
-    // Return demo data with recalculated distances
+  try {
+    // Overpass QL query: find hospitals, clinics, and doctors within radius
+    const query = `
+      [out:json][timeout:10];
+      (
+        node["amenity"="hospital"](around:${radiusMeters},${latitude},${longitude});
+        way["amenity"="hospital"](around:${radiusMeters},${latitude},${longitude});
+        node["amenity"="clinic"](around:${radiusMeters},${latitude},${longitude});
+        way["amenity"="clinic"](around:${radiusMeters},${latitude},${longitude});
+      );
+      out center body;
+    `;
+
+    const response = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `data=${encodeURIComponent(query)}`,
+    });
+
+    if (!response.ok) {
+      return DEMO_HOSPITALS.map((h) => ({
+        ...h,
+        distance: `${haversineDistance(latitude, longitude, h.latitude, h.longitude).toFixed(1)} km`,
+      }));
+    }
+
+    const data = await response.json();
+
+    if (!data.elements || data.elements.length === 0) {
+      return DEMO_HOSPITALS.map((h) => ({
+        ...h,
+        distance: `${haversineDistance(latitude, longitude, h.latitude, h.longitude).toFixed(1)} km`,
+      }));
+    }
+
+    const hospitals: NearbyHospital[] = data.elements
+      .map((el: any) => {
+        // For ways, use center coordinates
+        const lat = el.lat ?? el.center?.lat;
+        const lng = el.lon ?? el.center?.lon;
+        if (!lat || !lng) return null;
+
+        const tags = el.tags || {};
+        const name = tags.name || tags['name:en'] || 'Hospital/Clinic';
+        
+        // Skip unnamed entries
+        if (name === 'Hospital/Clinic' && !tags['addr:street']) return null;
+
+        const address = [
+          tags['addr:street'],
+          tags['addr:city'] || tags['addr:suburb'],
+          tags['addr:district'],
+        ].filter(Boolean).join(', ') || tags.description || '';
+
+        const dist = haversineDistance(latitude, longitude, lat, lng);
+
+        return {
+          id: `osm_${el.id}`,
+          name,
+          address: address || `${dist.toFixed(1)} km away`,
+          latitude: lat,
+          longitude: lng,
+          distance: `${dist.toFixed(1)} km`,
+          isOpen: undefined,
+        };
+      })
+      .filter(Boolean)
+      .sort((a: NearbyHospital, b: NearbyHospital) => parseFloat(a.distance) - parseFloat(b.distance))
+      .slice(0, 15);
+
+    return hospitals.length > 0 ? hospitals : DEMO_HOSPITALS;
+  } catch (error) {
+    // Network error — fall back to demo
     return DEMO_HOSPITALS.map((h) => ({
       ...h,
       distance: `${haversineDistance(latitude, longitude, h.latitude, h.longitude).toFixed(1)} km`,
-    })).sort((a, b) => parseFloat(a.distance) - parseFloat(b.distance));
-  }
-
-  try {
-    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${latitude},${longitude}&radius=${radiusMeters}&type=hospital&key=${GOOGLE_PLACES_API_KEY}`;
-
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.status !== 'OK' || !data.results) {
-      return DEMO_HOSPITALS;
-    }
-
-    return data.results.slice(0, 10).map((place: any) => {
-      const dist = haversineDistance(
-        latitude,
-        longitude,
-        place.geometry.location.lat,
-        place.geometry.location.lng
-      );
-      return {
-        id: place.place_id,
-        name: place.name,
-        address: place.vicinity || place.formatted_address || '',
-        latitude: place.geometry.location.lat,
-        longitude: place.geometry.location.lng,
-        distance: `${dist.toFixed(1)} km`,
-        rating: place.rating,
-        isOpen: place.opening_hours?.open_now,
-      };
-    }).sort((a: NearbyHospital, b: NearbyHospital) => parseFloat(a.distance) - parseFloat(b.distance));
-  } catch (error) {
-    // Network error — fall back to demo
-    return DEMO_HOSPITALS;
+    }));
   }
 }

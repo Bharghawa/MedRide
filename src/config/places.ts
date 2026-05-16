@@ -1,4 +1,12 @@
-// Nearby hospitals using OpenStreetMap Overpass API (free, no API key needed)
+// Nearby hospitals using FREE APIs (Photon + Nominatim + Overpass) - no API key needed
+
+// Cache for pre-fetched hospitals
+let cachedHospitals: NearbyHospital[] | null = null;
+let cachedLocation: { lat: number; lng: number } | null = null;
+
+export function getCachedHospitals(): NearbyHospital[] | null {
+  return cachedHospitals;
+}
 
 export interface NearbyHospital {
   id: string;
@@ -10,70 +18,6 @@ export interface NearbyHospital {
   rating?: number;
   isOpen?: boolean;
 }
-
-// Demo fallback data (Hyderabad hospitals)
-export const DEMO_HOSPITALS: NearbyHospital[] = [
-  {
-    id: 'demo_1',
-    name: 'Apollo Hospital',
-    address: 'Jubilee Hills, Hyderabad',
-    latitude: 17.4156,
-    longitude: 78.4347,
-    distance: '2.3 km',
-    rating: 4.5,
-    isOpen: true,
-  },
-  {
-    id: 'demo_2',
-    name: 'KIMS Hospital',
-    address: 'Secunderabad, Hyderabad',
-    latitude: 17.4399,
-    longitude: 78.4983,
-    distance: '3.1 km',
-    rating: 4.3,
-    isOpen: true,
-  },
-  {
-    id: 'demo_3',
-    name: 'Yashoda Hospital',
-    address: 'Somajiguda, Hyderabad',
-    latitude: 17.4239,
-    longitude: 78.4538,
-    distance: '1.8 km',
-    rating: 4.4,
-    isOpen: true,
-  },
-  {
-    id: 'demo_4',
-    name: 'Care Hospital',
-    address: 'Banjara Hills, Hyderabad',
-    latitude: 17.4156,
-    longitude: 78.4480,
-    distance: '2.7 km',
-    rating: 4.2,
-    isOpen: true,
-  },
-  {
-    id: 'demo_5',
-    name: 'Continental Hospital',
-    address: 'Gachibowli, Hyderabad',
-    latitude: 17.4400,
-    longitude: 78.3489,
-    distance: '5.4 km',
-    rating: 4.6,
-    isOpen: true,
-  },
-  {
-    id: 'demo_6',
-    name: 'Sunshine Hospital',
-    address: 'Paradise, Secunderabad',
-    latitude: 17.4445,
-    longitude: 78.4824,
-    distance: '3.8 km',
-    rating: 4.1,
-    isOpen: false,
-  },
-];
 
 function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371; // km
@@ -90,67 +34,221 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 }
 
 /**
- * Fetch nearby hospitals using OpenStreetMap Overpass API.
- * Free, no API key required. Falls back to demo data on error.
+ * Fetch nearby hospitals - tries 3 free APIs in order:
+ * 1. Photon (komoot) - fast, designed for POI search
+ * 2. Nominatim - OSM geocoding with proper params
+ * 3. Overpass via POST - direct OSM database query
  */
 export async function fetchNearbyHospitals(
   latitude: number,
   longitude: number,
-  radiusMeters: number = 5000
+  radiusMeters: number = 10000
 ): Promise<NearbyHospital[]> {
-  try {
-    // Overpass QL query: find hospitals, clinics, and doctors within radius
-    const query = `
-      [out:json][timeout:10];
-      (
-        node["amenity"="hospital"](around:${radiusMeters},${latitude},${longitude});
-        way["amenity"="hospital"](around:${radiusMeters},${latitude},${longitude});
-        node["amenity"="clinic"](around:${radiusMeters},${latitude},${longitude});
-        way["amenity"="clinic"](around:${radiusMeters},${latitude},${longitude});
-      );
-      out center body;
-    `;
+  console.log(`🏥 Fetching hospitals near ${latitude}, ${longitude}`);
 
-    const response = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(query)}`,
+  // Strategy 1: Photon API (komoot) - free, fast, no key
+  let results = await tryPhoton(latitude, longitude);
+  if (results.length > 0) return results;
+
+  // Strategy 2: Nominatim with proper query
+  results = await tryNominatim(latitude, longitude, radiusMeters);
+  if (results.length > 0) return results;
+
+  // Strategy 3: Overpass API via POST
+  results = await tryOverpassPost(latitude, longitude, radiusMeters);
+  if (results.length > 0) return results;
+
+  console.log('🏥 All APIs failed - no hospitals found');
+  return [];
+}
+
+// --- Strategy 1: Photon (komoot.io) ---
+async function tryPhoton(latitude: number, longitude: number): Promise<NearbyHospital[]> {
+  try {
+    console.log('🏥 [1/3] Trying Photon API...');
+    const url = `https://photon.komoot.io/api/?q=hospital&lat=${latitude}&lon=${longitude}&limit=20&lang=en`;
+
+    const response = await fetch(url, {
+      headers: { 'Accept': 'application/json' },
     });
 
     if (!response.ok) {
-      return DEMO_HOSPITALS.map((h) => ({
-        ...h,
-        distance: `${haversineDistance(latitude, longitude, h.latitude, h.longitude).toFixed(1)} km`,
-      }));
+      console.log(`🏥 Photon returned ${response.status}`);
+      return [];
     }
 
     const data = await response.json();
+    const features = data.features || [];
+    console.log(`🏥 Photon returned ${features.length} results`);
 
-    if (!data.elements || data.elements.length === 0) {
-      return DEMO_HOSPITALS.map((h) => ({
-        ...h,
-        distance: `${haversineDistance(latitude, longitude, h.latitude, h.longitude).toFixed(1)} km`,
-      }));
+    if (features.length === 0) return [];
+
+    const hospitals: NearbyHospital[] = features
+      .filter((f: any) => f.geometry?.coordinates)
+      .map((f: any, i: number) => {
+        const [lng, lat] = f.geometry.coordinates;
+        const props = f.properties || {};
+        const dist = haversineDistance(latitude, longitude, lat, lng);
+
+        const address = [
+          props.street,
+          props.district || props.locality,
+          props.city || props.county,
+          props.state,
+        ].filter(Boolean).join(', ');
+
+        return {
+          id: `ph_${props.osm_id || i}`,
+          name: props.name || `Hospital`,
+          address: address || `${dist.toFixed(1)} km away`,
+          latitude: lat,
+          longitude: lng,
+          distance: `${dist.toFixed(1)} km`,
+          isOpen: undefined,
+        };
+      })
+      .filter((h: NearbyHospital) => parseFloat(h.distance) < 30)
+      .sort((a: NearbyHospital, b: NearbyHospital) => parseFloat(a.distance) - parseFloat(b.distance))
+      .slice(0, 15);
+
+    if (hospitals.length > 0) {
+      console.log(`🏥 Photon success! Found ${hospitals.length}. First: ${hospitals[0].name}`);
+      cachedHospitals = hospitals;
+      cachedLocation = { lat: latitude, lng: longitude };
+    }
+    return hospitals;
+  } catch (e: any) {
+    console.log(`🏥 Photon error: ${e.message}`);
+    return [];
+  }
+}
+
+// --- Strategy 2: Nominatim (fixed query format) ---
+async function tryNominatim(latitude: number, longitude: number, radiusMeters: number): Promise<NearbyHospital[]> {
+  try {
+    console.log('🏥 [2/3] Trying Nominatim...');
+
+    // viewbox format: left,top,right,bottom (west,north,east,south)
+    const latDelta = radiusMeters / 111320;
+    const lonDelta = radiusMeters / (111320 * Math.cos(latitude * Math.PI / 180));
+    const west = longitude - lonDelta;
+    const east = longitude + lonDelta;
+    const south = latitude - latDelta;
+    const north = latitude + latDelta;
+
+    // Nominatim does NOT support OR - just search "hospital"
+    const url = `https://nominatim.openstreetmap.org/search?` +
+      `q=hospital&format=json&limit=20` +
+      `&viewbox=${west},${north},${east},${south}&bounded=1` +
+      `&addressdetails=1`;
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'MedRide-App/1.0 (medical transport)',
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      console.log(`🏥 Nominatim returned ${response.status}`);
+      return [];
     }
 
-    const hospitals: NearbyHospital[] = data.elements
-      .map((el: any) => {
-        // For ways, use center coordinates
+    const data = await response.json();
+    console.log(`🏥 Nominatim returned ${data.length} results`);
+
+    if (!data || data.length === 0) return [];
+
+    const hospitals: NearbyHospital[] = data
+      .map((place: any) => {
+        const lat = parseFloat(place.lat);
+        const lng = parseFloat(place.lon);
+        const dist = haversineDistance(latitude, longitude, lat, lng);
+
+        const addr = place.address || {};
+        const address = [
+          addr.road || addr.street,
+          addr.suburb || addr.neighbourhood || addr.city_district,
+          addr.city || addr.town || addr.village,
+        ].filter(Boolean).join(', ');
+
+        return {
+          id: `nom_${place.place_id}`,
+          name: place.name || place.display_name.split(',')[0],
+          address: address || place.display_name.split(',').slice(1, 3).join(',').trim(),
+          latitude: lat,
+          longitude: lng,
+          distance: `${dist.toFixed(1)} km`,
+          isOpen: undefined,
+        };
+      })
+      .sort((a: NearbyHospital, b: NearbyHospital) => parseFloat(a.distance) - parseFloat(b.distance))
+      .slice(0, 15);
+
+    if (hospitals.length > 0) {
+      console.log(`🏥 Nominatim success! Found ${hospitals.length}. First: ${hospitals[0].name}`);
+      cachedHospitals = hospitals;
+      cachedLocation = { lat: latitude, lng: longitude };
+    }
+    return hospitals;
+  } catch (e: any) {
+    console.log(`🏥 Nominatim error: ${e.message}`);
+    return [];
+  }
+}
+
+// --- Strategy 3: Overpass via POST (avoids URL-length 406 issues) ---
+async function tryOverpassPost(latitude: number, longitude: number, radiusMeters: number): Promise<NearbyHospital[]> {
+  try {
+    console.log('🏥 [3/3] Trying Overpass POST...');
+
+    const query = `[out:json][timeout:15];
+(
+  node["amenity"="hospital"](around:${radiusMeters},${latitude},${longitude});
+  way["amenity"="hospital"](around:${radiusMeters},${latitude},${longitude});
+  node["amenity"="clinic"](around:${radiusMeters},${latitude},${longitude});
+  way["amenity"="clinic"](around:${radiusMeters},${latitude},${longitude});
+);
+out center 20;`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const response = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json',
+      },
+      body: `data=${encodeURIComponent(query)}`,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.log(`🏥 Overpass POST returned ${response.status}`);
+      return [];
+    }
+
+    const data = await response.json();
+    const elements = data.elements || [];
+    console.log(`🏥 Overpass returned ${elements.length} results`);
+
+    if (elements.length === 0) return [];
+
+    const hospitals: NearbyHospital[] = elements
+      .map((el: any, i: number) => {
         const lat = el.lat ?? el.center?.lat;
         const lng = el.lon ?? el.center?.lon;
         if (!lat || !lng) return null;
 
         const tags = el.tags || {};
-        const name = tags.name || tags['name:en'] || 'Hospital/Clinic';
-        
-        // Skip unnamed entries
-        if (name === 'Hospital/Clinic' && !tags['addr:street']) return null;
-
+        const name = tags.name || tags['name:en'] || `Hospital #${i + 1}`;
         const address = [
+          tags['addr:housenumber'],
           tags['addr:street'],
           tags['addr:city'] || tags['addr:suburb'],
-          tags['addr:district'],
-        ].filter(Boolean).join(', ') || tags.description || '';
+        ].filter(Boolean).join(', ');
 
         const dist = haversineDistance(latitude, longitude, lat, lng);
 
@@ -168,12 +266,14 @@ export async function fetchNearbyHospitals(
       .sort((a: NearbyHospital, b: NearbyHospital) => parseFloat(a.distance) - parseFloat(b.distance))
       .slice(0, 15);
 
-    return hospitals.length > 0 ? hospitals : DEMO_HOSPITALS;
-  } catch (error) {
-    // Network error — fall back to demo
-    return DEMO_HOSPITALS.map((h) => ({
-      ...h,
-      distance: `${haversineDistance(latitude, longitude, h.latitude, h.longitude).toFixed(1)} km`,
-    }));
+    if (hospitals.length > 0) {
+      console.log(`🏥 Overpass success! Found ${hospitals.length}. First: ${hospitals[0].name}`);
+      cachedHospitals = hospitals;
+      cachedLocation = { lat: latitude, lng: longitude };
+    }
+    return hospitals;
+  } catch (e: any) {
+    console.log(`🏥 Overpass error: ${e.message}`);
+    return [];
   }
 }

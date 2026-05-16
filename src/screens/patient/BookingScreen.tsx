@@ -20,7 +20,7 @@ import { useRideStore, RideType, EmergencyLevel, SpecialNeed } from '../../store
 import { db, IS_DEMO_MODE } from '../../config/firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import * as Location from 'expo-location';
-import { fetchNearbyHospitals, NearbyHospital } from '../../config/places';
+import { fetchNearbyHospitals, NearbyHospital, getCachedHospitals } from '../../config/places';
 
 const rideTypes: { id: RideType; label: string; icon: string }[] = [
   { id: 'hospital_visit', label: 'Hospital Visit', icon: 'medical' },
@@ -67,7 +67,14 @@ export default function BookingScreen({ navigation }: any) {
   // Fetch nearby hospitals when entering step 3
   useEffect(() => {
     if (step === 3 && hospitals.length === 0) {
-      loadNearbyHospitals();
+      // Check cache first (pre-fetched from HomeScreen)
+      const cached = getCachedHospitals();
+      if (cached && cached.length > 0) {
+        console.log(`🏥 Using ${cached.length} pre-fetched hospitals from cache`);
+        setHospitals(cached);
+      } else {
+        loadNearbyHospitals();
+      }
     }
   }, [step]);
 
@@ -80,11 +87,16 @@ export default function BookingScreen({ navigation }: any) {
         const loc = await Location.getCurrentPositionAsync({});
         lat = loc.coords.latitude;
         lng = loc.coords.longitude;
-      } catch {}
+        console.log(`📍 Got real location: ${lat}, ${lng}`);
+      } catch (e: any) {
+        console.log(`📍 Location failed, using default: ${e.message}`);
+      }
       setUserLocation({ lat, lng });
       const results = await fetchNearbyHospitals(lat, lng);
+      console.log(`🏥 Got ${results.length} hospitals, first: ${results[0]?.name}`);
       setHospitals(results);
-    } catch {
+    } catch (e: any) {
+      console.log(`🏥 loadNearbyHospitals error: ${e.message}`);
       setHospitals([]);
     } finally {
       setHospitalsLoading(false);
@@ -442,8 +454,15 @@ export default function BookingScreen({ navigation }: any) {
 
                 {filteredHospitals.length === 0 && !hospitalsLoading && (
                   <View style={styles.emptyWrap}>
-                    <Ionicons name="location-outline" size={40} color={colors.textTertiary} />
-                    <Text style={styles.emptyText}>No hospitals found nearby</Text>
+                    <Ionicons name="wifi-outline" size={40} color={colors.textTertiary} />
+                    <Text style={styles.emptyText}>Couldn't fetch hospitals</Text>
+                    <Text style={[styles.emptyText, { fontSize: 12, marginTop: 4 }]}>Check your internet and try again</Text>
+                    <Pressable
+                      onPress={loadNearbyHospitals}
+                      style={{ marginTop: 16, backgroundColor: colors.primaryLight, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10 }}
+                    >
+                      <Text style={{ color: colors.primaryDark, fontWeight: '600' }}>Retry</Text>
+                    </Pressable>
                   </View>
                 )}
               </>

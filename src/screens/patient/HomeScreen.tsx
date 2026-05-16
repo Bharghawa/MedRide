@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import * as Location from 'expo-location';
+import { fetchNearbyHospitals } from '../../config/places';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, shadows, gradients } from '../../theme';
@@ -89,17 +90,40 @@ export default function PatientHomeScreen({ navigation }: any) {
   const user = useAuthStore((s) => s.user);
   const currentRide = useRideStore((s) => s.currentRide);
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
+  const [locationName, setLocationName] = useState('Getting location...');
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        setErrorMsg('Location permission needed');
-        return;
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          setLocationName('Location permission denied');
+          setErrorMsg('Location permission needed');
+          return;
+        }
+        const loc = await Location.getCurrentPositionAsync({});
+        setLocation(loc);
+
+        // Pre-fetch hospitals in background so it's ready for booking
+        fetchNearbyHospitals(loc.coords.latitude, loc.coords.longitude).then((results) => {
+          console.log(`🏥 Pre-fetched ${results.length} hospitals in background`);
+        });
+
+        // Reverse geocode to get actual address
+        const [address] = await Location.reverseGeocodeAsync({
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+        });
+        if (address) {
+          const parts = [address.name, address.district || address.subregion, address.city].filter(Boolean);
+          setLocationName(parts.join(', ') || `${address.city}, ${address.region}`);
+        } else {
+          setLocationName('Location found');
+        }
+      } catch {
+        setLocationName('Location unavailable');
       }
-      const loc = await Location.getCurrentPositionAsync({});
-      setLocation(loc);
     })();
   }, []);
 
@@ -141,7 +165,7 @@ export default function PatientHomeScreen({ navigation }: any) {
         <View style={styles.locationPill}>
           <Ionicons name="location" size={14} color={colors.primaryDark} />
           <Text style={styles.locationText} numberOfLines={1}>
-            {location ? 'Hyderabad, Telangana' : 'Getting location...'}
+            {locationName}
           </Text>
         </View>
       </LinearGradient>

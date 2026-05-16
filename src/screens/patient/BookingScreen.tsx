@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -8,6 +8,7 @@ import {
   Linking,
   TextInput,
   ActivityIndicator,
+  FlatList,
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,6 +20,7 @@ import { useRideStore, RideType, EmergencyLevel, SpecialNeed } from '../../store
 import { db, IS_DEMO_MODE } from '../../config/firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import * as Location from 'expo-location';
+import { fetchNearbyHospitals, NearbyHospital } from '../../config/places';
 
 const rideTypes: { id: RideType; label: string; icon: string }[] = [
   { id: 'hospital_visit', label: 'Hospital Visit', icon: 'medical' },
@@ -56,6 +58,43 @@ export default function BookingScreen({ navigation }: any) {
   const [selectedNeeds, setSelectedNeeds] = useState<SpecialNeed[]>([]);
   const [destination, setDestination] = useState('');
   const [loading, setLoading] = useState(false);
+  const [hospitals, setHospitals] = useState<NearbyHospital[]>([]);
+  const [hospitalsLoading, setHospitalsLoading] = useState(false);
+  const [selectedHospital, setSelectedHospital] = useState<NearbyHospital | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Fetch nearby hospitals when entering step 3
+  useEffect(() => {
+    if (step === 3 && hospitals.length === 0) {
+      loadNearbyHospitals();
+    }
+  }, [step]);
+
+  const loadNearbyHospitals = async () => {
+    setHospitalsLoading(true);
+    try {
+      let lat = 17.385;
+      let lng = 78.4867;
+      try {
+        const loc = await Location.getCurrentPositionAsync({});
+        lat = loc.coords.latitude;
+        lng = loc.coords.longitude;
+      } catch {}
+      setUserLocation({ lat, lng });
+      const results = await fetchNearbyHospitals(lat, lng);
+      setHospitals(results);
+    } catch {
+      setHospitals([]);
+    } finally {
+      setHospitalsLoading(false);
+    }
+  };
+
+  const filteredHospitals = hospitals.filter((h) =>
+    h.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    h.address.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   const handleEmergencySelect = (level: EmergencyLevel) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -81,7 +120,7 @@ export default function BookingScreen({ navigation }: any) {
   };
 
   const handleBookRide = async () => {
-    if (!selectedType || !selectedLevel || !destination.trim()) {
+    if (!selectedType || !selectedLevel || !selectedHospital) {
       Alert.alert('Missing info', 'Please complete all steps before booking.');
       return;
     }
@@ -90,15 +129,8 @@ export default function BookingScreen({ navigation }: any) {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     try {
-      let lat = 17.385;
-      let lng = 78.4867;
-      try {
-        const loc = await Location.getCurrentPositionAsync({});
-        lat = loc.coords.latitude;
-        lng = loc.coords.longitude;
-      } catch {
-        // Use default coordinates if location fails
-      }
+      const lat = userLocation?.lat ?? 17.385;
+      const lng = userLocation?.lng ?? 78.4867;
 
       const rideData = {
         patientId: user?.uid || '',
@@ -113,10 +145,10 @@ export default function BookingScreen({ navigation }: any) {
           address: 'Current Location',
         },
         destination: {
-          latitude: 0,
-          longitude: 0,
-          address: destination,
-          hospitalName: destination,
+          latitude: selectedHospital.latitude,
+          longitude: selectedHospital.longitude,
+          address: selectedHospital.address,
+          hospitalName: selectedHospital.name,
         },
         createdAt: Date.now(),
       };
@@ -142,7 +174,7 @@ export default function BookingScreen({ navigation }: any) {
   };
 
   const canContinue = step === 1 ? (selectedType && selectedLevel) : true;
-  const canBook = !!destination.trim();
+  const canBook = !!selectedHospital;
 
   return (
     <View style={styles.container}>
@@ -337,68 +369,128 @@ export default function BookingScreen({ navigation }: any) {
           <>
             <Text style={styles.sectionTitle}>Where to?</Text>
             <Text style={styles.sectionSubtitle}>
-              Enter hospital or clinic name
+              Nearby hospitals & clinics
             </Text>
 
+            {/* Search bar */}
             <View style={styles.destinationWrap}>
               <Ionicons
-                name="location"
-                size={22}
-                color={colors.primary}
-                style={{ marginRight: 12 }}
+                name="search"
+                size={20}
+                color={colors.textTertiary}
+                style={{ marginRight: 10 }}
               />
               <TextInput
-                value={destination}
-                onChangeText={setDestination}
-                placeholder="e.g., Apollo Hospital, City Clinic"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="Search hospitals..."
                 placeholderTextColor={colors.textTertiary}
                 style={styles.destinationInput}
               />
             </View>
 
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryTitle}>Ride Summary</Text>
-
-              <View style={styles.summaryRow}>
-                <Ionicons name="medical" size={18} color={colors.primary} />
-                <Text style={styles.summaryLabel}>Type</Text>
-                <Text style={styles.summaryValue}>
-                  {rideTypes.find((t) => t.id === selectedType)?.label ?? '—'}
-                </Text>
+            {/* Hospital list */}
+            {hospitalsLoading ? (
+              <View style={styles.loadingWrap}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingText}>Finding nearby hospitals...</Text>
               </View>
+            ) : (
+              <>
+                {filteredHospitals.map((hospital) => {
+                  const isSelected = selectedHospital?.id === hospital.id;
+                  return (
+                    <Pressable
+                      key={hospital.id}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setSelectedHospital(hospital);
+                        setDestination(hospital.name);
+                      }}
+                      style={({ pressed }) => [pressed && { opacity: 0.85 }]}
+                    >
+                      <View style={[styles.hospitalCard, isSelected && styles.hospitalCardActive]}>
+                        <View style={[styles.hospitalIcon, isSelected && { backgroundColor: colors.primaryLight }]}>
+                          <Ionicons name="medical" size={20} color={isSelected ? colors.primaryDark : colors.textSecondary} />
+                        </View>
+                        <View style={styles.hospitalInfo}>
+                          <Text style={styles.hospitalName} numberOfLines={1}>{hospital.name}</Text>
+                          <Text style={styles.hospitalAddress} numberOfLines={1}>{hospital.address}</Text>
+                          <View style={styles.hospitalMeta}>
+                            <Ionicons name="navigate" size={12} color={colors.textTertiary} />
+                            <Text style={styles.hospitalDistance}>{hospital.distance}</Text>
+                            {hospital.rating && (
+                              <>
+                                <Ionicons name="star" size={12} color="#F59E0B" style={{ marginLeft: 10 }} />
+                                <Text style={styles.hospitalRating}>{hospital.rating}</Text>
+                              </>
+                            )}
+                            {hospital.isOpen !== undefined && (
+                              <Text style={[styles.hospitalOpen, { color: hospital.isOpen ? colors.secondary : colors.emergency }]}>
+                                {hospital.isOpen ? '  Open' : '  Closed'}
+                              </Text>
+                            )}
+                          </View>
+                        </View>
+                        {isSelected && (
+                          <Ionicons name="checkmark-circle" size={24} color={colors.primaryDark} />
+                        )}
+                      </View>
+                    </Pressable>
+                  );
+                })}
 
-              <View style={styles.summaryRow}>
-                <Ionicons name="speedometer" size={18} color="#F59E0B" />
-                <Text style={styles.summaryLabel}>Urgency</Text>
-                <Text style={styles.summaryValue}>
-                  {emergencyLevels.find((l) => l.id === selectedLevel)?.label ?? '—'}
-                </Text>
-              </View>
+                {filteredHospitals.length === 0 && !hospitalsLoading && (
+                  <View style={styles.emptyWrap}>
+                    <Ionicons name="location-outline" size={40} color={colors.textTertiary} />
+                    <Text style={styles.emptyText}>No hospitals found nearby</Text>
+                  </View>
+                )}
+              </>
+            )}
 
-              {selectedNeeds.length > 0 && (
+            {/* Summary */}
+            {selectedHospital && (
+              <View style={styles.summaryCard}>
+                <Text style={styles.summaryTitle}>Ride Summary</Text>
+
                 <View style={styles.summaryRow}>
-                  <Ionicons name="accessibility" size={18} color={colors.secondary} />
-                  <Text style={styles.summaryLabel}>Needs</Text>
+                  <Ionicons name="medical" size={18} color={colors.primary} />
+                  <Text style={styles.summaryLabel}>Type</Text>
                   <Text style={styles.summaryValue}>
-                    {selectedNeeds
-                      .map((n) => specialNeeds.find((s) => s.id === n)?.label)
-                      .join(', ')}
+                    {rideTypes.find((t) => t.id === selectedType)?.label ?? '—'}
                   </Text>
                 </View>
-              )}
 
-              <View style={styles.summaryDivider} />
+                <View style={styles.summaryRow}>
+                  <Ionicons name="speedometer" size={18} color="#F59E0B" />
+                  <Text style={styles.summaryLabel}>Urgency</Text>
+                  <Text style={styles.summaryValue}>
+                    {emergencyLevels.find((l) => l.id === selectedLevel)?.label ?? '—'}
+                  </Text>
+                </View>
 
-              <View style={styles.fareRow}>
-                <Text style={styles.fareLabel}>Estimated fare</Text>
-                <Text style={styles.fareValue}>₹150–250</Text>
+                <View style={styles.summaryRow}>
+                  <Ionicons name="location" size={18} color={colors.secondary} />
+                  <Text style={styles.summaryLabel}>To</Text>
+                  <Text style={styles.summaryValue} numberOfLines={1}>
+                    {selectedHospital.name}
+                  </Text>
+                </View>
+
+                <View style={styles.summaryDivider} />
+
+                <View style={styles.fareRow}>
+                  <Text style={styles.fareLabel}>Estimated fare</Text>
+                  <Text style={styles.fareValue}>₹{Math.round(parseFloat(selectedHospital.distance) * 50 + 50)}–{Math.round(parseFloat(selectedHospital.distance) * 50 + 120)}</Text>
+                </View>
               </View>
-            </View>
+            )}
 
             <View style={styles.infoRow}>
               <Ionicons name="time-outline" size={18} color={colors.textSecondary} />
               <Text style={styles.infoText}>
-                Your driver will be matched in ~2 minutes
+                Your auto will be matched in ~2 minutes
               </Text>
             </View>
           </>
@@ -735,6 +827,80 @@ const styles = StyleSheet.create({
   infoText: {
     fontSize: 13,
     color: colors.textSecondary,
+  },
+  loadingWrap: {
+    alignItems: 'center',
+    paddingVertical: 40,
+    gap: 12,
+  },
+  loadingText: {
+    fontSize: 14,
+    color: colors.textSecondary,
+  },
+  hospitalCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.cardBg,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+  },
+  hospitalCardActive: {
+    borderColor: colors.primaryDark,
+    backgroundColor: '#FFFEF5',
+  },
+  hospitalIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: colors.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  hospitalInfo: {
+    flex: 1,
+  },
+  hospitalName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    marginBottom: 2,
+  },
+  hospitalAddress: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginBottom: 4,
+  },
+  hospitalMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  hospitalDistance: {
+    fontSize: 12,
+    color: colors.textTertiary,
+    fontWeight: '500',
+  },
+  hospitalRating: {
+    fontSize: 12,
+    color: colors.textTertiary,
+    fontWeight: '500',
+  },
+  hospitalOpen: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  emptyWrap: {
+    alignItems: 'center',
+    paddingVertical: 40,
+    gap: 8,
+  },
+  emptyText: {
+    fontSize: 14,
+    color: colors.textTertiary,
   },
   bottomBar: {
     position: 'absolute',

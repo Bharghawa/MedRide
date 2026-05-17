@@ -102,7 +102,24 @@ export default function PatientHomeScreen({ navigation }: any) {
           setErrorMsg('Location permission needed');
           return;
         }
-        const loc = await Location.getCurrentPositionAsync({});
+
+        // Try current position with timeout, fall back to last known
+        let loc: Location.LocationObject | null = null;
+        try {
+          loc = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 10000,
+          });
+        } catch {
+          // getCurrentPosition timed out, try last known
+          loc = await Location.getLastKnownPositionAsync();
+        }
+
+        if (!loc) {
+          setLocationName('Waiting for GPS...');
+          return;
+        }
+
         setLocation(loc);
 
         // Pre-fetch hospitals in background so it's ready for booking
@@ -121,8 +138,9 @@ export default function PatientHomeScreen({ navigation }: any) {
         } else {
           setLocationName('Location found');
         }
-      } catch {
-        setLocationName('Location unavailable');
+      } catch (e: any) {
+        console.log('📍 Location error:', e.message);
+        setLocationName('Tap to retry location');
       }
     })();
   }, []);

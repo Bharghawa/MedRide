@@ -1,6 +1,32 @@
-# MedRide 🚗
+# MedRide Mobile App 🚗💊
 
-Non-emergency medical transport app — book an auto-rickshaw ride to your nearest hospital or clinic.
+> A cross-platform mobile application for non-emergency medical transportation — connecting patients with auto-rickshaw drivers for safe, reliable rides to hospitals and clinics.
+
+MedRide solves the critical last-mile problem in healthcare access. Patients in urban and semi-urban areas can instantly book a ride to their nearest hospital or clinic, with real-time tracking, emergency SOS features, and accessibility options for special medical needs. Built with React Native and Expo for Android, iOS, and Web.
+
+---
+
+## 📱 App Screenshots
+
+<p align="center">
+  <img src="screenshots/login-screen.png" alt="Login Screen" width="200"/>
+  &nbsp;&nbsp;
+  <img src="screenshots/patient-home.png" alt="Patient Home" width="200"/>
+  &nbsp;&nbsp;
+  <img src="screenshots/booking-flow.png" alt="Booking Flow" width="200"/>
+</p>
+
+<p align="center">
+  <img src="screenshots/driver-home.png" alt="Driver Home" width="200"/>
+  &nbsp;&nbsp;
+  <img src="screenshots/driver-online.png" alt="Driver Online Status" width="200"/>
+</p>
+
+<p align="center">
+  <em>Login • Patient Home • Booking Flow • Driver Home • Driver Status</em>
+</p>
+
+---
 
 ## Features
 
@@ -36,8 +62,8 @@ Non-emergency medical transport app — book an auto-rickshaw ride to your neare
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/Bharghawa/MedRide.git
-cd MedRide
+git clone https://github.com/Bharghawa/MedRide-Mobile-App.git
+cd MedRide-Mobile-App
 
 # 2. Install dependencies
 npm install

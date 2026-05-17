@@ -20,7 +20,7 @@ import { useRideStore, RideType, EmergencyLevel, SpecialNeed } from '../../store
 import { db, IS_DEMO_MODE } from '../../config/firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import * as Location from 'expo-location';
-import { fetchNearbyHospitals, NearbyHospital, getCachedHospitals } from '../../config/places';
+import { fetchNearbyHospitals, NearbyHospital, getCachedHospitals, searchHospitalsByName } from '../../config/places';
 
 const rideTypes: { id: RideType; label: string; icon: string }[] = [
   { id: 'hospital_visit', label: 'Hospital Visit', icon: 'medical' },
@@ -81,16 +81,19 @@ export default function BookingScreen({ navigation }: any) {
   const loadNearbyHospitals = async () => {
     setHospitalsLoading(true);
     try {
-      let lat = 17.385;
-      let lng = 78.4867;
-      try {
-        const loc = await Location.getCurrentPositionAsync({});
-        lat = loc.coords.latitude;
-        lng = loc.coords.longitude;
-        console.log(`📍 Got real location: ${lat}, ${lng}`);
-      } catch (e: any) {
-        console.log(`📍 Location failed, using default: ${e.message}`);
+      let loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      if (!loc) {
+        loc = (await Location.getLastKnownPositionAsync()) as Location.LocationObject;
       }
+      if (!loc) {
+        console.log('📍 No location available');
+        setHospitals([]);
+        setHospitalsLoading(false);
+        return;
+      }
+      const lat = loc.coords.latitude;
+      const lng = loc.coords.longitude;
+      console.log(`📍 Got real location: ${lat}, ${lng}`);
       setUserLocation({ lat, lng });
       const results = await fetchNearbyHospitals(lat, lng);
       console.log(`🏥 Got ${results.length} hospitals, first: ${results[0]?.name}`);
@@ -103,10 +106,36 @@ export default function BookingScreen({ navigation }: any) {
     }
   };
 
-  const filteredHospitals = hospitals.filter((h) =>
-    h.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    h.address.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Live search - queries API when user types
+  useEffect(() => {
+    if (searchQuery.length < 2 || !userLocation) return;
+    const timeout = setTimeout(async () => {
+      try {
+        const results = await searchHospitalsByName(searchQuery, userLocation.lat, userLocation.lng);
+        if (results.length > 0) {
+          setHospitals(results);
+        }
+      } catch (e) {
+        // keep existing results
+      }
+    }, 500); // debounce 500ms
+    return () => clearTimeout(timeout);
+  }, [searchQuery, userLocation]);
+
+  // Reset to cached when search is cleared
+  useEffect(() => {
+    if (searchQuery === '' && step === 3) {
+      const cached = getCachedHospitals();
+      if (cached && cached.length > 0) setHospitals(cached);
+    }
+  }, [searchQuery]);
+
+  const filteredHospitals = searchQuery.length > 0
+    ? hospitals.filter((h) =>
+        h.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        h.address.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : hospitals;
 
   const handleEmergencySelect = (level: EmergencyLevel) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

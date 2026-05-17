@@ -42,31 +42,44 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 export async function fetchNearbyHospitals(
   latitude: number,
   longitude: number,
-  radiusMeters: number = 10000
+  radiusMeters: number = 20000
 ): Promise<NearbyHospital[]> {
   console.log(`🏥 Fetching hospitals near ${latitude}, ${longitude}`);
 
   // Strategy 1: Photon API (komoot) - free, fast, no key
   let results = await tryPhoton(latitude, longitude);
-  if (results.length > 0) return results;
+  if (results.length >= 3) return results;
 
-  // Strategy 2: Nominatim with proper query
-  results = await tryNominatim(latitude, longitude, radiusMeters);
-  if (results.length > 0) return results;
+  // Strategy 2: Nominatim with proper query (better for geographic search)
+  let nominatimResults = await tryNominatim(latitude, longitude, radiusMeters);
+  if (nominatimResults.length > results.length) results = nominatimResults;
+  if (results.length >= 3) return results;
 
-  // Strategy 3: Overpass API via POST
-  results = await tryOverpassPost(latitude, longitude, radiusMeters);
+  // Strategy 3: Overpass API via POST (direct OSM database, radius-based)
+  let overpassResults = await tryOverpassPost(latitude, longitude, radiusMeters);
+  if (overpassResults.length > results.length) results = overpassResults;
   if (results.length > 0) return results;
 
   console.log('🏥 All APIs failed - no hospitals found');
   return [];
 }
 
+// Search hospitals by name near user's location
+export async function searchHospitalsByName(
+  query: string,
+  latitude: number,
+  longitude: number
+): Promise<NearbyHospital[]> {
+  if (!query || query.length < 2) return [];
+  console.log(`🔍 Searching for "${query}" near ${latitude}, ${longitude}`);
+  return tryPhoton(latitude, longitude, query);
+}
+
 // --- Strategy 1: Photon (komoot.io) ---
-async function tryPhoton(latitude: number, longitude: number): Promise<NearbyHospital[]> {
+async function tryPhoton(latitude: number, longitude: number, searchTerm: string = 'hospital'): Promise<NearbyHospital[]> {
   try {
-    console.log('🏥 [1/3] Trying Photon API...');
-    const url = `https://photon.komoot.io/api/?q=hospital&lat=${latitude}&lon=${longitude}&limit=20&lang=en`;
+    console.log(`🏥 [1/3] Trying Photon API for "${searchTerm}"...`);
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(searchTerm)}&lat=${latitude}&lon=${longitude}&limit=50&lang=en`;
 
     const response = await fetch(url, {
       headers: { 'Accept': 'application/json' },
@@ -79,11 +92,38 @@ async function tryPhoton(latitude: number, longitude: number): Promise<NearbyHos
 
     const data = await response.json();
     const features = data.features || [];
-    console.log(`🏥 Photon returned ${features.length} results`);
+    console.log(`🏥 Photon returned ${features.length} raw results`);
 
     if (features.length === 0) return [];
 
-    const hospitals: NearbyHospital[] = features
+    // IMPORTANT: Filter to only actual medical facilities, not streets/places named "hospital"
+    const medicalTypes = ['hospital', 'clinic', 'doctors', 'health_centre', 'medical', 'healthcare'];
+    const medicalFeatures = features.filter((f: any) => {
+      const props = f.properties || {};
+      const osmKey = props.osm_key || '';
+      const osmValue = (props.osm_value || '').toLowerCase();
+      const type = (props.type || '').toLowerCase();
+      
+      // Include if it's tagged as a medical amenity/healthcare
+      if (osmKey === 'amenity' && medicalTypes.includes(osmValue)) return true;
+      if (osmKey === 'healthcare') return true;
+      if (osmKey === 'building' && osmValue === 'hospital') return true;
+      
+      // Exclude streets, houses, neighborhoods, etc.
+      if (type === 'street' || type === 'house' || type === 'locality' || type === 'district') return false;
+      
+      // If osm_key is highway/place/boundary, it's not a hospital
+      if (['highway', 'place', 'boundary', 'landuse'].includes(osmKey)) return false;
+      
+      // For custom search terms, be more lenient — include if has a name and isn't clearly non-medical
+      if (searchTerm !== 'hospital' && props.name) return true;
+      
+      return false;
+    });
+
+    console.log(`🏥 Photon filtered to ${medicalFeatures.length} medical facilities`);
+
+    const hospitals: NearbyHospital[] = medicalFeatures
       .filter((f: any) => f.geometry?.coordinates)
       .map((f: any, i: number) => {
         const [lng, lat] = f.geometry.coordinates;
@@ -107,7 +147,7 @@ async function tryPhoton(latitude: number, longitude: number): Promise<NearbyHos
           isOpen: undefined,
         };
       })
-      .filter((h: NearbyHospital) => parseFloat(h.distance) < 30)
+      .filter((h: NearbyHospital) => parseFloat(h.distance) < 25)
       .sort((a: NearbyHospital, b: NearbyHospital) => parseFloat(a.distance) - parseFloat(b.distance))
       .slice(0, 15);
 

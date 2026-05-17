@@ -6,28 +6,6 @@ MedRide solves the critical last-mile problem in healthcare access. Patients in 
 
 ---
 
-## 📱 App Screenshots
-
-<p align="center">
-  <img src="screenshots/login-screen.png" alt="Login Screen" width="200"/>
-  &nbsp;&nbsp;
-  <img src="screenshots/patient-home.png" alt="Patient Home" width="200"/>
-  &nbsp;&nbsp;
-  <img src="screenshots/booking-flow.png" alt="Booking Flow" width="200"/>
-</p>
-
-<p align="center">
-  <img src="screenshots/driver-home.png" alt="Driver Home" width="200"/>
-  &nbsp;&nbsp;
-  <img src="screenshots/driver-online.png" alt="Driver Online Status" width="200"/>
-</p>
-
-<p align="center">
-  <em>Login • Patient Home • Booking Flow • Driver Home • Driver Status</em>
-</p>
-
----
-
 ## Features
 
 - **Real-time hospital search** — Fetches nearby hospitals/clinics based on your actual GPS location using free OpenStreetMap APIs (Photon, Nominatim, Overpass). No dummy data.
